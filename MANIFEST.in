@@ -1,0 +1,6 @@
+recursive-include lcls_cu_inj_nn_model/files *
+include environment.yml
+include README.md
+include LICENSE
+include requirements.txt
+include setup.py

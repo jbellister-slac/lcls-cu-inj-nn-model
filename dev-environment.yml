@@ -1,0 +1,19 @@
+name: lcls-cu-inj-nn-model-dev
+channels:
+  - conda-forge
+dependencies:
+  - click
+  - pydantic # until lume-services registered with conda
+  - graphviz
+  - python-graphviz
+  - prefect
+  - pip 
+  - pip: 
+    - git+https://github.com/jbellister-slac/lume-services.git@prefect_2
+    - git+https://github.com/slaclab/lume-model.git  # Until lume-model updated in conda-forge
+
+  # dev
+  - pre-commit
+  - pytest
+  - pytest-cov
+  - jupyterlab

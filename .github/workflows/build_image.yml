@@ -1,0 +1,36 @@
+name: Build Container Image
+
+on:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  push_to_registry:
+    name: Build and Push to SCR
+    runs-on: ubuntu-latest
+    env:
+      REPO: lcls-cu-inj-nn-model
+      
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v2
+      
+      - name: Log in to SCR
+        run: |
+          echo ${{ secrets.SCR_PAT }} | docker login --username ${{ secrets.STANFORD_USERNAME }} --password-stdin http://scr.svc.stanford.edu
+
+      - name: Build image
+        run: |
+          docker build -t ${{ env.REPO }} . --build-arg VERSION=${{ github.ref_name }} 
+      
+      - name: Tag images
+        run: |
+          docker tag ${{ env.REPO }} scr.svc.stanford.edu/${{ secrets.STANFORD_USERNAME }}/${{ env.REPO }}:latest
+          docker tag ${{ env.REPO }} scr.svc.stanford.edu/${{ secrets.STANFORD_USERNAME }}/${{ env.REPO }}:${{ github.ref_name }}
+
+      - name: Push image
+        run: |
+          docker image push scr.svc.stanford.edu/${{ secrets.STANFORD_USERNAME }}/${{ env.REPO }}:latest
+          docker image push scr.svc.stanford.edu/${{ secrets.STANFORD_USERNAME }}/${{ env.REPO }}:${{ github.ref_name }}
+

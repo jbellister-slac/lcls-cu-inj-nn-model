@@ -1,0 +1,50 @@
+name: Run tests
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # fix for setup miniconda bug https://github.com/conda-incubator/setup-miniconda/issues/232
+        python-version: [3.8, 3.9, "3.10"]
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: conda-incubator/setup-miniconda@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+          mamba-version: "*"
+          channels: conda-forge
+          activate-environment: lcls-cu-inj-nn-model-dev
+          environment-file: dev-environment.yml
+      
+      - name: Install matrix python
+        shell: bash -l {0}
+        run: |
+          conda install python=${{ matrix.python-version }}
+        
+
+      - name: Install lcls_cu_inj_nn_model
+        shell: bash -l {0}
+        run: |
+          pip install -e .
+
+      - run: mkdir coverage
+
+      - name: Run Tests
+        shell: bash -l {0}
+        run: |
+          pytest --cov-report term --cov=lcls_cu_inj_nn_model --junitxml=./coverage/pytest.xml | tee ./coverage/pytest-coverage.txt
+
+      - name: store coverage files
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage
+          path: coverage
+  
