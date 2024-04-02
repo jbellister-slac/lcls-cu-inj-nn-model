@@ -1,245 +1,86 @@
-from typing import Dict
+import json
+import k2eg
+import math
+import os
+import torch
 
+from lume_model.models import TorchModule
 from prefect import flow, get_run_logger, task
+from typing import Any, Dict
 
-from lume_services.results import Result
-from lume_services.tasks import (
-    configure_lume_services,
-    prepare_lume_model_variables,
-    check_local_execution,
-    SaveDBResult,
-    LoadDBResult,
-    LoadFile,
-    SaveFile,
-)
-from lume_services.files import TextFile
-from lume_model.variables import InputVariable, OutputVariable
 
-from lcls_cu_inj_nn_model.model import LCLSCuInjNNModel
-from lcls_cu_inj_nn_model import INPUT_VARIABLES
+flow_dir = os.path.dirname(os.path.abspath(__file__))
 
 
 @task()
-def preprocessing_task(input_variables, misc_settings):
-    """If additional preprocessing of input variables are required, process the
-    variables here. This task is flexible and can absorb other misc settings passed
-    as parameters to the flow.
+def read_input_data(k2eg_client: k2eg.dml) -> Dict[str, float]:
+    """ Read the input data our model expects from live PV values """
+    pv_names = json.load(open(os.path.join(flow_dir, 'info/pv_mapping.json')))['pv_name_to_sim_name']
+    input_parameter_values = {'CAMR:IN20:186:R_DIST': None, 'Pulse_length': 1.8550514181818183}
 
-    Examples:
-        Suppose we have a preprocessing step where we want to scale all values by some
-        multiplier. This task would look like:
+    for pv_name in pv_names.keys():
+        if pv_name not in input_parameter_values and 'OTRS' not in pv_name and ':' in pv_name:
+            input_parameter_values[pv_name] = None
 
-        ```python
+    k2eg_pvs_to_monitor = ['ca://' + pv for pv in input_parameter_values.keys() if
+                           pv not in ['CAMR:IN20:186:R_DIST', 'Pulse_length']]
 
-        def preprocessing_task(input_variables, multiplier):
-            for var_name in input_variables.keys():
-                input_variables[var_name].value = input_variables[var_name].value
-                                                        * multiplier
+    for pv_name in k2eg_pvs_to_monitor:
+        input_parameter_values[pv_name.replace('ca://', '')] = k2eg_client.get(pv_name, 5.0)["value"]
 
-        ```
+    in_xrms_value = k2eg_client.get('ca://CAMR:IN20:186:XRMS')["value"]
+    in_yrms_value = k2eg_client.get('ca://CAMR:IN20:186:YRMS')["value"]
+    rdist = math.sqrt(in_xrms_value ** 2 + in_yrms_value ** 2)
+    input_parameter_values['CAMR:IN20:186:R_DIST'] = rdist
 
-    """
-    raise NotImplementedError("Called not implemented preprocessing_task in flow.")
-
-
-@task()
-def format_file(output_variables):
-    """Task used for organizing an file object. The formatted object must be
-    serializable by the file_type passed in the SaveFile task call.
-    See https://slaclab.github.io/lume-services/services/files/ for more information
-    about interacting with file objects and file systems
-
-    Examples:
-        Suppose we have a workflow with two results `text1` and `text2`. We'd like to
-        concatenate the text and save in a text file. This would look like:
-        ```python
-
-        @task()
-        def format_file(output_variables):
-            text = output_variables["text1"].value + output_variables["text2"].value
-            return text
-
-        save_file_task = SaveFile()
-
-        with Flow("my-flow") as flow:
-
-            ... # set up params, evaluate, etc.
-
-            output_variables = evaluate(formatted_input_variables)
-            text = format_file(output_variables)
-
-            file_parameters = save_file_task.parameters
-
-            # save file
-            my_file = save_file_task(
-                text,
-                filename = file_parameters["filename"],
-                filesystem_identifier = file_parameters["filesystem_identifier"],
-                file_type = TextFile # THIS MUST BE PASSED IN THE TASK CALL
-            )
-
-        ```
-
-    """
-    raise NotImplementedError("Called not implemented format_file in flow.")
+    return input_parameter_values
 
 
 @task()
-def format_result(
-    input_variables: Dict[str, InputVariable],
-    output_variables: Dict[str, OutputVariable],
-):
-    """Formats model results into a LUME-services Result object. This task should be
-    modified for custom organization of outputs.
+def evaluate(lume_module: TorchModule, input_values: torch.Tensor) -> torch.Tensor:
+    """ Run the trained model on the live data we retrieved """
+    with torch.no_grad():
+        predictions = lume_module(input_values)
 
-    NOTE: Here we use the generic Result class defined in LUME-services https://slaclab.github.io/lume-services/api/results/
-    Other Result types can be easily configured by subclassing this Result class and
-    LUME-services pre-packages a result for Impact simulations: https://slaclab.github.io/lume-services/api/results/#lume_services.results.impact
-
-
-    Args:
-        input_variables (Dict[str, InputVariable]): Dictionary mapping input variable
-            name to LUME-model variable.
-        output_variables (Dict[str, OutputVariable]): Dictionary mapping output variable
-            name to LUME-model variable.
-
-    Returns:
-        Result: Lume-Services Result object.
-
-    """  # noqa
-
-    inputs = {var_name: var.value for var_name, var in input_variables.items()}
-    outputs = {var_name: var.value for var_name, var in output_variables.items()}
-
-    return Result(inputs=inputs, outputs=outputs)
+    return predictions
 
 
 @task()
-def load_input(var_name, parameter):
-    # Confirm Inputs are Correctly Loaded!
-    logger = get_run_logger()
-    if parameter.value is None:
-        parameter.value = parameter.default
-    logger.info(f'Loaded {var_name} with value {parameter}')
-    return parameter
+def write_output(k2eg_client: k2eg.dml, predictions: torch.Tensor) -> None:
+    """ Write the results of our predictions back to the relevant EPICS PVs """
+    k2eg_client.put('pva://LUME:OTRS:IN20:571:XRMS', predictions[0].item(), 5.0)
+    k2eg_client.put('pva://LUME:OTRS:IN20:571:YRMS', predictions[1].item(), 5.0)
 
 
-@task()
-def evaluate(formatted_input_vars, settings=None):
-
-    if settings is None:
-        settings = {}
-
-    model = LCLSCuInjNNModel(**settings)
-
-    return model.evaluate(formatted_input_vars)
-
-
-# DEFINE TASK FOR SAVING DB RESULT
-# See docs: https://slaclab.github.io/lume-services/api/tasks/#lume_services.tasks.db.SaveDBResult
-save_db_result_task = SaveDBResult(timeout=30)
-
-# DEFINE TASK FOR SAVING FILE
-# See docs: https://slaclab.github.io/lume-services/api/tasks/#lume_services.tasks.file.SaveFile
-save_file_task = SaveFile(timeout=30)
-
-# If your model requires loading a file object, you use the task pre-packaged
-# with LUME-services:
-# load_file_task = LoadFile(timeout=30)
-
-# If your model requires loading a results database entry, you can use the LoadDBResult
-# task packaged with LUME-services:
-# load_db_result_task = LoadDBResult(timeout=10)
-
-
+@flow(name="lcls_cu_inj_nn_model_flow")
 def lcls_cu_inj_nn_model_flow():
     logger = get_run_logger()
-    logger.info(f'Starting flow run...')
-    # CONFIGURE LUME-SERVICES
-    # see https://slaclab.github.io/lume-services/workflows/#configuring-flows-for-use-with-lume-services
-    #configure = configure_lume_services()
+    logger.info(f'Starting flow run from: {flow_dir}')
 
-    # CHECK WHETHER THE FLOW IS RUNNING LOCALLY
-    # If the flow runs using a local backend, the results service will not be available
-    #running_local = check_local_execution()
-    #running_local.set_upstream(configure)
+    logger.info(f'Results for torch.cuda.is_available(): {torch.cuda.is_available()}')
 
-    # SET UP INPUT VARIABLE PARAMETERS.
-    # These are parameters that can be supplied to the workflow at runtime
-    input_variable_parameter_dict = {}
-    for var in INPUT_VARIABLES:
-        input_variable_parameter_dict[var.name] = load_input(var.name, var)
+    # Load the model we will run
+    lume_module = TorchModule(os.path.join(flow_dir, "model/pv_module.yml"))
+    logger.info(lume_module)
 
+    # Read in PV data for our inputs
+    os.environ['K2EG_PYTHON_CONFIGURATION_PATH_FOLDER'] = os.path.join(flow_dir, "k2eg")
+    k2eg_client = k2eg.dml('env', 'app-test-3')
+    input_parameter_values = read_input_data(k2eg_client)
+    input_values = torch.tensor(list(input_parameter_values.values())).unsqueeze(0)
 
-    # If your model requires loading a file object, you can use the LoadFile task
-    # pre-packaged with LUME-services. The load_file_task is defined in a comment above
-    # outside of this flow scope. The task parameters can be conveniently accessed for
-    # adding to flow parameters:
-    # file_parameters = load_file_task.parameters
-    # loaded_obj = load_file_task(**file_parameters)
+    logger.info(f'Obtained live values from EPICS are as follows: {input_parameter_values}')
+    logger.info(f'Thus the input values to our model are: {input_values}')
 
-    # If your model requires loading a result object stored in the database, you can
-    # use the LoadDBResult task pre-packaged with LUME-services The load_db_result_task
-    # is defined in a comment above outside of this flow scope. The task parameters can
-    # be conveniently accessed for adding to flow parameters:
-    # result_parameters = load_db_result_task.parameters
-    # db_result = load_db_result(flow_id=flow_id_of_result_flow, attribute="outputs")
-    # To access a sepecific value returned in the db_result, in this case the value of
-    # the output variable named "output1":
-    # db_result = load_db_result(
-    #                   flow_id=flow_id_of_result_flow,
-    #                   attribute="outputs",
-    #                   attribute_index=["output1"]
-    # )
+    predictions = evaluate(lume_module, input_values)
 
-    # ORGANIZE INPUT VARIABLE VALUES LUME-MODEL VARIABLES
-    formatted_input_variables = prepare_lume_model_variables(
-        input_variable_parameter_dict, INPUT_VARIABLES
-    )
+    logger.info(f'Predictions: {predictions}')
+    logger.info(predictions)
 
-    # If additional preprocessing is necessary, the user can implement a preprocessing task
-    # formatted_input_vars = preprocessing_task(formatted_input_vars)
+    # Write the output back to EPICS
+    write_output(k2eg_client, predictions)
 
-    # RUN EVALUATION
-    output_variables = evaluate(formatted_input_variables)
-    # If we had settings we were passing to the model, it would look like:
-    # results = evaluate(formatted_input_vars, settings={
-    #    "setting_1": setting_1,
-    #    "setting_2": setting_2
-    # })
-
-    # SAVE A FILE WITH SOME FORMATTED DATA
-    # This assumes the output is a text file, but see https://slaclab.github.io/lume-services/api/files/files/ # noqa
-    # for custom types. If the formats supported do not suit your needs, you can
-    # alternatively subclass File for custom serialization.
-    #file_data = format_file(output_variables)
-
-
-    # MARK CONFIGURATION OF LUME_SERVICES AS AN UPSTREAM TASK
-    # tasks using backend services like filesystem and results db must mark configure
-    # as an upstream task
-
-    # add "filename" and "filesystem_identifier to the flow parameters"
-    #file_parameters = save_file_task.parameters
-    #saved_file_rep = save_file_task(file_data, file_type=TextFile, **file_parameters)
-
-
-    # MARK CONFIGURATION OF LUME_SERVICES AS AN UPSTREAM TASK
-    # tasks using backend services like filesystem and results db must mark configure
-    # as an upstream task
-    #saved_file_rep.set_upstream(configure)
-
-
-    # SAVE RESULTS TO RESULTS DATABASE, requires LUME-services results backend, still work in progress
-    #if not running_local:
-    #    # CREATE LUME-services Result object
-    #    formatted_result = format_result(
-    #        input_variables=formatted_input_variables, output_variables=output_variables
-    #    )
-
-        # RUN DATABASE_SAVE_TASK
-    #    saved_model_rep = save_db_result_task(formatted_result)
-    #    saved_model_rep.set_upstream(configure)
+    k2eg_client.close()
 
 
 def get_flow():
