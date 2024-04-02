@@ -1,15 +1,16 @@
 import copy
+from pydantic import SerializeAsAny
 from typing import Dict
-from lume_model.models import BaseModel
+from lume_model.base import LUMEBaseModel
 from lume_model.variables import InputVariable, OutputVariable
 
 from lcls_cu_inj_nn_model import INPUT_VARIABLES, OUTPUT_VARIABLES
 
 
 
-class LCLSCuInjNNModel(BaseModel):
-    input_variables = copy.deepcopy(INPUT_VARIABLES)
-    output_variables = copy.deepcopy(OUTPUT_VARIABLES)
+class LCLSCuInjNNModel(LUMEBaseModel):
+    input_variables: list[SerializeAsAny[InputVariable]] = copy.deepcopy(INPUT_VARIABLES)
+    output_variables: list[SerializeAsAny[OutputVariable]] = copy.deepcopy(OUTPUT_VARIABLES)
 
     def __init__(self, **settings_kwargs):
         """Initialize the model. If additional settings are required, they can be 

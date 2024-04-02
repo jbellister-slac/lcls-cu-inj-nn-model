@@ -1,9 +1,16 @@
 name: lcls-cu-inj-nn-model
 channels:
+  - pytorch
+  - nvidia
   - conda-forge
 dependencies:
-  - prefect # until lume-services registered with conda
-  - pip 
-  - pip: 
+  - botorch>=0.8.2
+  - python=3.9
+  - pytorch
+  - pytorch-cuda=11.8
+  - prefect=2.14.2 # until lume-services registered with conda
+  - pip
+  - pip:
+    - k2eg
     - git+https://github.com/jbellister-slac/lume-services.git@prefect_2
     - git+https://github.com/slaclab/lume-model.git  # Until lume-model updated in conda-forge

@@ -2,6 +2,4 @@
 
 set -ef -o pipefail
 
-source /venv/bin/activate
-
 exec "$@"

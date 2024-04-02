@@ -9,7 +9,7 @@ RUN mamba install -c conda-forge conda-pack && \
   mamba env create -f /lcls-cu-inj-nn-model/environment.yml
 
 # Use conda-pack to create a  enviornment in /venv:
-RUN conda-pack -n lcls-cu-inj-nn-model -o /tmp/env.tar && \
+RUN conda-pack --ignore-missing-files -n lcls-cu-inj-nn-model -o /tmp/env.tar && \
   mkdir /venv && cd /venv && tar xf /tmp/env.tar && \
   rm /tmp/env.tar
 
@@ -38,6 +38,8 @@ RUN chmod +x /usr/local/bin/_entrypoint.sh
 
 RUN source /venv/bin/activate && \
   python -m pip install /lcls-cu-inj-nn-model
+
+WORKDIR /lcls-cu-inj-nn-model/lcls_cu_inj_nn_model
 
 # When image is run, run the code with the environment
 # activated:
